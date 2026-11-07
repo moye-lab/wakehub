@@ -1,0 +1,15 @@
+# WakeHub .dockerignore：构建上下文只含构建所需文件。
+# 尤其排除 node_modules（Dockerfile 里用 npm ci 重装）、本地数据与密钥。
+.git
+.github
+bin/
+data/
+.env
+.env.*
+!/.env.example
+web/node_modules/
+web/dist/
+deployments/
+*.log
+*.tar.gz
+.DS_Store

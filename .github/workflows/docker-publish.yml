@@ -1,0 +1,72 @@
+# WakeHub — 打 v* tag 自动构建多架构镜像并推送到 Docker Hub。
+#
+# 触发：仅 git tag v* 推送（git tag v0.3.3 && git push origin v0.3.3）。
+# 注意：本工作流没有 workflow_dispatch——手动触发会从未打 tag 的提交
+# 构建并把 `latest` 指向它（v0.3.3 问题 17），故只允许 tag 事件触发。
+# 产物：moyelab/wakehub:<版本>、moyelab/wakehub:<主.次>、moyelab/wakehub:latest，
+# 均为 linux/amd64 + linux/arm64 双架构。
+#
+# 仓库需先配两个 Secrets（Settings → Secrets and variables → Actions）：
+#   DOCKERHUB_USERNAME — Docker Hub 用户名（moyelab）
+#   DOCKERHUB_TOKEN    — Docker Hub 访问令牌（长期 PAT，只读推送权限即可）
+# 构建本身不需要任何密钥（npm / Go 依赖源由 Dockerfile 的 ARG 默认值提供）。
+
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 版本一致性守卫（v0.3.3 问题 17）：tag 如 v0.3.3 必须与三处
+      # 硬编码版本一致，否则打出的镜像标签与 /health 上报的版本不符。
+      # 任一处不符即失败，绝不构建推送。
+      - name: Check version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "Tag version: $TAG"
+          SERVER_VER="$(grep -E '^const serverVersion = ' internal/api/router.go | sed -E 's/.*"([^"]+)".*/\1/')"
+          AGENT_VER="$(grep -E '^const agentVersion = ' internal/agent/client.go | sed -E 's/.*"([^"]+)".*/\1/')"
+          WEB_VER="$(grep -E '"version":' web/package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
+          echo "serverVersion=$SERVER_VER agentVersion=$AGENT_VER web/package.json=$WEB_VER"
+          [ "$SERVER_VER" = "$TAG" ] || { echo "::error::serverVersion ($SERVER_VER) != tag ($TAG)"; exit 1; }
+          [ "$AGENT_VER" = "$TAG" ] || { echo "::error::agentVersion ($AGENT_VER) != tag ($TAG)"; exit 1; }
+          [ "$WEB_VER" = "$TAG" ] || { echo "::error::web/package.json version ($WEB_VER) != tag ($TAG)"; exit 1; }
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: moyelab/wakehub
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
